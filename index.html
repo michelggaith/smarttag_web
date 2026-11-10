@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#111">
+<title>SmartTag</title>
+<style>
+  :root { --bg:#111; --fg:#eee; --muted:#888; --ok:#2e7d32; --alarm:#d32f2f; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--fg);
+         min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:24px 16px; }
+  h1 { margin:0 0 4px; font-size:1.4rem; }
+  #estado { color:var(--muted); margin-bottom:24px; }
+  #panel { width:100%; max-width:420px; border-radius:16px; padding:32px 16px; text-align:center;
+           background:#222; font-size:1.6rem; font-weight:700; transition:background .2s; }
+  #panel.ok { background:var(--ok); }
+  #panel.alarma { background:var(--alarm); animation:parpadeo .5s 6; }
+  @keyframes parpadeo { 50% { opacity:.4; } }
+  button { margin-top:24px; width:100%; max-width:420px; padding:16px; font-size:1.1rem; border:0;
+           border-radius:12px; background:#1976d2; color:#fff; }
+  button:disabled { background:#444; }
+  ul { list-style:none; padding:0; width:100%; max-width:420px; margin-top:24px; }
+  li { padding:10px 4px; border-bottom:1px solid #333; display:flex; justify-content:space-between; }
+  li span:last-child { color:var(--muted); }
+  #aviso { color:#ffb74d; max-width:420px; text-align:center; }
+</style>
+</head>
+<body>
+<h1>SmartTag</h1>
+<div id="estado">Desconectado</div>
+<div id="panel">Sin conexión</div>
+<button id="conectar">Conectar</button>
+<p id="aviso" hidden>Este navegador no soporta Bluetooth. Usá Chrome en Android.</p>
+<ul id="historial"></ul>
+
+<script>
+// Mismos UUID que main/ble_alarm.c
+const SVC = '5a3a0001-6f1e-4c8b-9d2a-0c5e7b1a2f00';
+const CHR = '5a3a0002-6f1e-4c8b-9d2a-0c5e7b1a2f00';
+
+const $ = id => document.getElementById(id);
+const estado = t => $('estado').textContent = t;
+let device, audio;
+
+if (!navigator.bluetooth) { $('aviso').hidden = false; $('conectar').disabled = true; }
+
+$('conectar').onclick = async () => {
+  audio = audio || new AudioContext();   // el audio solo se habilita tras un toque del usuario
+  try {
+    device = await navigator.bluetooth.requestDevice({ filters: [{ name: 'SmartTag' }], optionalServices: [SVC] });
+    device.addEventListener('gattserverdisconnected', reconectar);
+    await conectar();
+  } catch (e) { estado('Error: ' + e.message); }
+};
+
+async function conectar() {
+  estado('Conectando…');
+  const server = await device.gatt.connect();
+  const chr = await (await server.getPrimaryService(SVC)).getCharacteristic(CHR);
+  chr.addEventListener('characteristicvaluechanged', e => alarma(new TextDecoder().decode(e.target.value)));
+  await chr.startNotifications();
+  estado('Conectado a ' + device.name);
+  $('panel').className = 'ok'; $('panel').textContent = 'Todo OK';
+  $('conectar').disabled = true;
+}
+
+async function reconectar() {
+  $('panel').className = ''; $('panel').textContent = 'Conexión perdida';
+  for (let i = 1; i <= 5; i++) {
+    estado(`Reconectando (${i}/5)…`);
+    try { return await conectar(); } catch { await new Promise(r => setTimeout(r, 2000)); }
+  }
+  estado('Desconectado'); $('conectar').disabled = false;
+}
+
+function alarma(texto) {
+  $('panel').className = ''; void $('panel').offsetWidth;  // reinicia la animación
+  $('panel').className = 'alarma'; $('panel').textContent = '🚨 ' + texto;
+  navigator.vibrate?.([400, 200, 400, 200, 400]);
+  beep();
+  const li = document.createElement('li');
+  li.innerHTML = `<span></span><span>${new Date().toLocaleTimeString()}</span>`;
+  li.firstChild.textContent = texto;
+  $('historial').prepend(li);
+}
+
+function beep() {
+  if (!audio) return;
+  const o = audio.createOscillator(), g = audio.createGain();
+  o.frequency.value = 880; o.connect(g); g.connect(audio.destination);
+  g.gain.setValueAtTime(0.3, audio.currentTime);
+  o.start(); o.stop(audio.currentTime + 0.6);
+}
+</script>
+</body>
+</html>
